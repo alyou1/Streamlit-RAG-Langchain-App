@@ -1,0 +1,5 @@
+langchain
+langchain-commmunity
+langchain-chroma
+streamlit
+langchain-openai
