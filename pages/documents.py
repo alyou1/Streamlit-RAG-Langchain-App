@@ -36,7 +36,7 @@ if uploaded_file:
     loader = PyPDFLoader(tmp_path)
     pages = loader.load()
 
-    text_splitter = RecursiveCharacterTextSplitter(chunk_size=520, chunk_overlap=20)
+    text_splitter = RecursiveCharacterTextSplitter(chunk_size=520, chunk_overlap=20,length_function=len)
     docs = text_splitter.split_documents(pages)
 
     # Ajouter des métadonnées
