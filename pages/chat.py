@@ -99,20 +99,46 @@ with st.sidebar:
 vector_store = get_vector_store()
 llm = ChatOpenAI(model="gpt-4o-mini", api_key=OPENAI_API_KEY, temperature=0.7)
 
+# --- Construire l'historique pour la mémoire ---
+def build_history(conversation_msgs, limit=5):
+    """
+    Construit l'historique textuel à injecter dans le prompt.
+    On limite aux X derniers messages pour ne pas surcharger.
+    """
+    history = ""
+    for msg in conversation_msgs[-limit:]:
+        prefix = "Utilisateur" if msg["role"] == "user" else "Assistant"
+        history += f"{prefix} : {msg['content']}\n"
+    return history
+
+# --- Prompt avec mémoire ---
 template = """
 Tu es Hugo, un assistant juridique spécialisé dans le domaine bancaire. 
-Ta mission est de répondre uniquement aux questions juridiques relatives au secteur bancaire, en t’appuyant exclusivement sur les documents fournis et les éléments de contexte.
+Ta mission est de répondre exclusivement aux questions juridiques relatives au secteur bancaire, en t’appuyant uniquement sur les documents fournis et l'historique de la conversation.
 
 Règles de comportement :
-- Si la question ne concerne pas le juridique ou le domaine bancaire, réponds : « Merci de poser des questions juridiques dans le domaine bancaire ! ».
-- Si on te demande « Bonjour » ,« Parle-moi de toi », « Qui es-tu ? » ou « Que sais-tu faire ? », tu peux répondre brièvement à propos de ton rôle.
-- Si la réponse n’est pas présente dans les documents ou que tu n’en es pas certain, dis simplement que tu ne sais pas. N’invente jamais de réponse.
-- Donne toujours une réponse claire, concise (maximum trois phrases).
-- Termine toujours ta réponse par : « merci de m'avoir posé la question ! ».
+
+1.  **Gestion des salutations et présentations :**
+    - Si la question est "Bonjour", "Bonsoir", "Salut", ou toute autre salutation, réponds par une salutation polie.
+    - Si la question est "Qui es-tu ?", "Parle-moi de toi" ou "Présente-toi", décris brièvement ton rôle en une ou deux phrases maximum.
+    - Si on te demande de résumer la conversation, fais-le de manière concise en une phrase.
+
+2.  **Périmètre :** Si la question ne concerne pas le droit bancaire ou le juridique, réponds : « Merci de poser des questions juridiques dans le domaine bancaire ! ».
+
+3.  **Incertitude :** Si la réponse n’est pas présente dans les documents ou que tu n’en es pas certain, dis simplement que tu ne sais pas. N’invente jamais de réponse.
+
+4.  **Conciseness :** Tes réponses aux questions de fond ne doivent pas dépasser quatre phrases.
+
+5.  **Signature :** Termine toujours tes réponses par : « Merci de m'avoir posé la question ! ».
+
+Historique récent de la conversation :
+{history}
 
 Contexte : {context}
 
 Question : {question}
+
+Réponse utile :
 """
 
 prompt = PromptTemplate.from_template(template)
@@ -148,8 +174,22 @@ if user_input := st.chat_input("💬 Pose ta question ici..."):
     with st.chat_message("user"):
         st.markdown(user_input)
 
-    # Génération réponse
-    response = chain.invoke(user_input)
+    # Construire historique (dernier 5 échanges par ex.)
+    history = build_history(st.session_state.conversations[st.session_state.active_conv], limit=10)
+
+    # Génération réponse avec mémoire
+    chain_with_memory = (
+        {
+            "context": retriever | format_docs,
+            "question": RunnablePassthrough(),
+            "history": lambda x: history,  # injecte l’historique
+        }
+        | prompt
+        | llm
+        | StrOutputParser()
+    )
+
+    response = chain_with_memory.invoke(user_input)
 
     with st.spinner("Génération de la réponse..."):
         with st.chat_message("assistant"):
