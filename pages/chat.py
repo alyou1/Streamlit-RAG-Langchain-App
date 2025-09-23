@@ -1,6 +1,8 @@
 import streamlit as st
 from langchain_openai import ChatOpenAI
 from langchain.prompts import ChatPromptTemplate
+from prompts.prompt_rh import prompt_rh
+from prompts.prompt_juridique import prompt_juridique
 from langchain_core.prompts import PromptTemplate
 from langchain_core.output_parsers import StrOutputParser
 from langchain_core.runnables import RunnablePassthrough
@@ -12,7 +14,6 @@ from chat_db import init_chat_table, load_conversations, save_message  # ajout D
 OPENAI_API_KEY = CONFIG["OPENAI_API_KEY"]
 BASE_DIR = "./collections"
 
-# --- Vérification login ---
 # --- Vérification login ---
 if "logged_in" not in st.session_state or not st.session_state.logged_in:
     st.error("🚫 Accès refusé. Veuillez vous connecter.")
@@ -111,52 +112,34 @@ def build_history(conversation_msgs, limit=5):
         history += f"{prefix} : {msg['content']}\n"
     return history
 
-# --- Prompt avec mémoire ---
-template = """
-Tu es Hugo, un assistant juridique spécialisé dans le domaine bancaire. 
-Ta mission est de répondre exclusivement aux questions juridiques relatives au secteur bancaire, en t’appuyant uniquement sur les documents fournis et l'historique de la conversation.
 
-Règles de comportement :
+# --- Vérification rôle utilisateur ---
+role = st.session_state.role
 
-1.  **Gestion des salutations et présentations :**
-    - Si la question est "Bonjour", "Bonsoir", "Salut", ou toute autre salutation, réponds par une salutation polie.
-    - Si la question est "Qui es-tu ?", "Parle-moi de toi" ou "Présente-toi", décris brièvement ton rôle en une ou deux phrases maximum.
-    - Si on te demande de résumer la conversation, fais-le de manière concise en une phrase.
-
-2.  **Périmètre :** Si la question ne concerne pas le droit bancaire ou le juridique, réponds : « Merci de poser des questions juridiques dans le domaine bancaire ! ».
-
-3.  **Incertitude :** Si la réponse n’est pas présente dans les documents ou que tu n’en es pas certain, dis simplement que tu ne sais pas. N’invente jamais de réponse.
-
-4.  **Conciseness :** Tes réponses aux questions de fond ne doivent pas dépasser quatre phrases.
-
-5.  **Signature :** Termine toujours tes réponses par : « Merci de m'avoir posé la question ! ».
-
-Historique récent de la conversation :
-{history}
-
-Contexte : {context}
-
-Question : {question}
-
-Réponse utile :
-"""
-
-prompt = PromptTemplate.from_template(template)
+if role == "juridique":
+    prompt = prompt_juridique
+elif role == "rh":
+    prompt = prompt_rh
+else:
+    st.error("🚫 Rôle non reconnu pour le chatbot.")
+    st.stop()
 
 retriever = vector_store.as_retriever(
     search_type="similarity_score_threshold",
     search_kwargs={"score_threshold": 0.5, "k": 5}
 )
-
-chain = (
-    {
-        "context": retriever | format_docs,
-        "question": RunnablePassthrough(),
-    }
-    | prompt
-    | llm
-    | StrOutputParser()
-)
+# --- Fonction pour construire la chaîne avec mémoire ---
+def build_chain(prompt, retriever, llm, history):
+    return (
+        {
+            "context": retriever | format_docs,
+            "question": RunnablePassthrough(),
+            "history": lambda _: history,  # injecte l’historique texte
+        }
+        | prompt
+        | llm
+        | StrOutputParser()
+    )
 
 # --- Affichage de l’historique ---
 for msg in st.session_state.conversations[st.session_state.active_conv]:
@@ -178,16 +161,7 @@ if user_input := st.chat_input("💬 Pose ta question ici..."):
     history = build_history(st.session_state.conversations[st.session_state.active_conv], limit=10)
 
     # Génération réponse avec mémoire
-    chain_with_memory = (
-        {
-            "context": retriever | format_docs,
-            "question": RunnablePassthrough(),
-            "history": lambda x: history,  # injecte l’historique
-        }
-        | prompt
-        | llm
-        | StrOutputParser()
-    )
+    chain_with_memory = build_chain(prompt, retriever, llm, history)
 
     response = chain_with_memory.invoke(user_input)
 

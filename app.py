@@ -4,7 +4,7 @@ from auth import create_users_table, login_user, logout_user
 # Création table si elle n'existe pas
 create_users_table()
 
-st.set_page_config(page_title="Application sécurisée", page_icon="🔐")
+st.set_page_config(page_title="Chatbot", page_icon="🔐")
 
 if "logged_in" not in st.session_state:
     st.session_state.logged_in = False

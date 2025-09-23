@@ -42,11 +42,16 @@ if uploaded_file:
     # Ajouter des métadonnées
     doc_id = str(uuid4())
     date_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    role_uploader = st.session_state.role  # rôle de l’utilisateur qui upload
+    uploader = f"{st.session_state.nom} {st.session_state.prenom}"
+
     for d in docs:
         d.metadata.update({
             "doc_id": doc_id,
             "filename": uploaded_file.name,
-            "date_added": date_str
+            "date_added": date_str,
+            "uploaded_by_role": role_uploader,
+            "uploader": uploader
         })
 
     vector_store.add_documents(
@@ -54,32 +59,42 @@ if uploaded_file:
         documents=docs
     )
 
-    st.success(f"✅ Document '{uploaded_file.name}' ajouté à la base.")
+    st.success(f"✅ Document '{uploaded_file.name}' ajouté à la base par {uploader}.")
 
-# === Affichage du tableau des documents ===
+# documents
 try:
-    results = vector_store.get(include=["metadatas"])  # FIX
+    results = vector_store.get(include=["metadatas"])
     metadatas = results["metadatas"]
     ids = results["ids"]
 
     if metadatas:
+        # Filtrer selon rôle
+        if st.session_state.role != "admin":
+            metadatas_filtered = [
+                (i, m) for i, m in enumerate(metadatas)
+                if m.get("uploaded_by_role") == st.session_state.role
+            ]
+        else:
+            metadatas_filtered = list(enumerate(metadatas))
+
         # Regrouper par doc_id
         unique_docs = {}
-        chunk_map = {}  # doc_id -> liste des chunk_ids
-        for i, meta in enumerate(metadatas):
-            if "doc_id" in meta:
-                doc_id = meta["doc_id"]
-                if doc_id not in unique_docs:
-                    unique_docs[doc_id] = {
-                        "Nom": meta.get("filename", "N/A"),
-                        "Date": meta.get("date_added", "N/A"),
-                    }
-                chunk_map.setdefault(doc_id, []).append(ids[i])
+        chunk_map = {}
+        for i, meta in metadatas_filtered:
+            doc_id = meta.get("doc_id")
+            if doc_id not in unique_docs:
+                unique_docs[doc_id] = {
+                    "Nom": meta.get("filename", "N/A"),
+                    "Date": meta.get("date_added", "N/A"),
+                    "Rôle": meta.get("uploaded_by_role", "N/A"),
+                    "Username": meta.get("uploader", "N/A")
+                }
+            chunk_map.setdefault(doc_id, []).append(ids[i])
 
         st.subheader("📑 Documents enregistrés")
         selected = []
         for doc_id, infos in unique_docs.items():
-            col1, col2, col3 = st.columns([0.05, 0.45, 0.5])
+            col1, col2, col3, col4, col5 = st.columns([0.05, 0.4, 0.3, 0.25, 0.2])
             with col1:
                 checked = st.checkbox("", key=doc_id)
                 if checked:
@@ -88,13 +103,17 @@ try:
                 st.markdown(f"**{infos['Nom']}**")
             with col3:
                 st.markdown(f"📅 {infos['Date']}")
+            with col4:
+                st.markdown(f"**{infos['Rôle']}**")
+            with col5:
+                st.markdown(f"👤 {infos['Username']}")
+
 
         if selected and st.button("🗑️ Supprimer la sélection"):
             for doc_id in selected:
                 vector_store.delete(ids=chunk_map[doc_id])
             st.success(f"✅ {len(selected)} document(s) supprimé(s).")
             st.rerun()
-
     else:
         st.info("Aucun document n’a encore été chargé.")
 except Exception as e:

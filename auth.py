@@ -29,7 +29,8 @@ def hash_password(password: str) -> str:
 def verify_password(password: str, hashed: str) -> bool:
     return hash_password(password) == hashed
 
-def register_user(matricule, nom, prenom, email, password, role="user"):
+def register_user(matricule, nom, prenom, email, password, role):
+    # role="user"
     conn = get_connection()
     conn.execute(
         "INSERT INTO users (matricule, nom, prenom, email, password, role) VALUES (?, ?, ?, ?, ?, ?)",
