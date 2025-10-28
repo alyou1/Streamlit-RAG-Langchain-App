@@ -1,6 +1,6 @@
 import sqlite3
 from contextlib import contextmanager
-
+import datetime
 DB_PATH = "users.db"
 
 @contextmanager
@@ -23,6 +23,17 @@ def init_chat_table():
             timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
         )
         """)
+
+        conn.execute("""
+        CREATE TABLE IF NOT EXISTS message_feedback (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            matricule TEXT,
+            conversation_name TEXT,
+            message_index INTEGER,
+            feedback_type TEXT,
+            timestamp TEXT
+        )
+            """)
 
 def save_message(matricule, conv_name, role, content):
     with get_conn() as conn:
@@ -70,3 +81,50 @@ def rename_conversation(matricule, old_name, new_name):
     """, (new_name, matricule, old_name))
     conn.commit()
     conn.close()
+
+
+def save_feedback(matricule, conversation_name, message_index, feedback_type):
+    """Sauvegarde le feedback d'un message"""
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    # Vérifier si un feedback existe déjà
+    cursor.execute("""
+        SELECT id FROM message_feedback 
+        WHERE matricule = ? AND conversation_name = ? AND message_index = ?
+    """, (matricule, conversation_name, message_index))
+
+    existing = cursor.fetchone()
+
+    if existing:
+        # Mettre à jour
+        cursor.execute("""
+            UPDATE message_feedback 
+            SET feedback_type = ?, timestamp = ? 
+            WHERE id = ?
+        """, (feedback_type, datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"), existing[0]))
+    else:
+        # Insérer nouveau
+        cursor.execute("""
+            INSERT INTO message_feedback (matricule, conversation_name, message_index, feedback_type, timestamp)
+            VALUES (?, ?, ?, ?, ?)
+        """, (matricule, conversation_name, message_index, feedback_type,
+              datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
+
+    conn.commit()
+    conn.close()
+
+
+def get_feedback(matricule, conversation_name, message_index):
+    """Récupère le feedback d'un message"""
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+
+    cursor.execute("""
+        SELECT feedback_type FROM message_feedback 
+        WHERE matricule = ? AND conversation_name = ? AND message_index = ?
+    """, (matricule, conversation_name, message_index))
+
+    result = cursor.fetchone()
+    conn.close()
+
+    return result[0] if result else None
