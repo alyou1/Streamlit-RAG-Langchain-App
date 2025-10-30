@@ -1,7 +1,13 @@
 import sqlite3
 from contextlib import contextmanager
-import datetime
+from datetime import datetime, timedelta
+import sys
+
+sys.path.append(".")
+from src.vectorstore import get_vector_store
+
 DB_PATH = "users.db"
+
 
 @contextmanager
 def get_conn():
@@ -11,6 +17,9 @@ def get_conn():
     conn.commit()
     conn.close()
 
+
+# ===== STATISTIQUES EXISTANTES =====
+
 def get_all_feedbacks():
     """Récupère tous les feedbacks pour analyse"""
     with get_conn() as conn:
@@ -19,7 +28,6 @@ def get_all_feedbacks():
             FROM message_feedback
             ORDER BY timestamp DESC
         """).fetchall()
-
     return [(row['matricule'], row['conversation_name'], row['message_index'],
              row['feedback_type'], row['timestamp']) for row in rows]
 
@@ -28,9 +36,7 @@ def get_feedback_stats():
     """Récupère les statistiques globales des feedbacks"""
     with get_conn() as conn:
         rows = conn.execute("""
-            SELECT 
-                feedback_type,
-                COUNT(*) as count
+            SELECT feedback_type, COUNT(*) as count
             FROM message_feedback
             GROUP BY feedback_type
         """).fetchall()
@@ -38,14 +44,12 @@ def get_feedback_stats():
     stats = {"positive": 0, "negative": 0}
     for row in rows:
         stats[row['feedback_type']] = row['count']
-
     return stats
 
 
 def get_user_stats():
     """Récupère les statistiques par utilisateur"""
     with get_conn() as conn:
-        # Total messages par utilisateur
         user_rows = conn.execute("""
             SELECT 
                 c.matricule,
@@ -58,7 +62,6 @@ def get_user_stats():
             GROUP BY c.matricule
         """).fetchall()
 
-        # Feedbacks par utilisateur
         feedback_rows = conn.execute("""
             SELECT 
                 matricule,
@@ -72,7 +75,6 @@ def get_user_stats():
                                          "negative": row['negative_feedbacks']}
                       for row in feedback_rows}
 
-    # Combiner les stats
     result = []
     for row in user_rows:
         matricule = row['matricule']
@@ -96,11 +98,8 @@ def get_conversation_stats():
     with get_conn() as conn:
         rows = conn.execute("""
             SELECT 
-                conv_name,
-                matricule,
-                COUNT(*) as message_count,
-                MIN(timestamp) as created_at,
-                MAX(timestamp) as last_message_at
+                conv_name, matricule, COUNT(*) as message_count,
+                MIN(timestamp) as created_at, MAX(timestamp) as last_message_at
             FROM conversations
             GROUP BY conv_name, matricule
             ORDER BY last_message_at DESC
@@ -133,12 +132,192 @@ def get_connected_users():
     """Récupère la liste des utilisateurs qui ont utilisé le chat"""
     with get_conn() as conn:
         rows = conn.execute("""
-            SELECT DISTINCT 
-                c.matricule,
-                MAX(c.timestamp) as last_activity
+            SELECT DISTINCT c.matricule, MAX(c.timestamp) as last_activity
             FROM conversations c
             GROUP BY c.matricule
             ORDER BY last_activity DESC
         """).fetchall()
 
     return [(row['matricule'], row['last_activity']) for row in rows]
+
+
+# ===== NOUVELLES STATISTIQUES =====
+
+def get_total_users():
+    """Nombre total d'utilisateurs inscrits"""
+    with get_conn() as conn:
+        result = conn.execute("SELECT COUNT(*) as count FROM users").fetchone()
+    return result['count']
+
+
+def get_total_documents():
+    """Nombre total de documents chargés"""
+    try:
+        vector_store = get_vector_store()
+        results = vector_store.get(include=["metadatas"])
+        metadatas = results["metadatas"]
+
+        # Compter les documents uniques par doc_id
+        unique_doc_ids = set()
+        for meta in metadatas:
+            doc_id = meta.get("doc_id")
+            if doc_id:
+                unique_doc_ids.add(doc_id)
+
+        return len(unique_doc_ids)
+    except:
+        return 0
+
+
+def get_documents_by_type():
+    """Statistiques des documents par type"""
+    try:
+        vector_store = get_vector_store()
+        results = vector_store.get(include=["metadatas"])
+        metadatas = results["metadatas"]
+
+        # Compter les types de documents uniques
+        doc_types = {}
+        seen_docs = set()
+
+        for meta in metadatas:
+            doc_id = meta.get("doc_id")
+            filename = meta.get("filename", "")
+
+            # Éviter de compter plusieurs fois le même document
+            if doc_id and doc_id not in seen_docs:
+                seen_docs.add(doc_id)
+
+                # Déterminer le type
+                if filename.endswith('.pdf'):
+                    doc_type = 'PDF'
+                elif filename.endswith(('.xlsx', '.xls')):
+                    doc_type = 'Excel'
+                elif filename.endswith('.csv'):
+                    doc_type = 'CSV'
+                else:
+                    doc_type = 'Autre'
+
+                doc_types[doc_type] = doc_types.get(doc_type, 0) + 1
+
+        return doc_types
+    except:
+        return {}
+
+
+def get_users_connected_now():
+    """Nombre d'utilisateurs actuellement connectés (sessions actives)"""
+    with get_conn() as conn:
+        result = conn.execute("""
+            SELECT COUNT(DISTINCT matricule) as count
+            FROM user_sessions
+            WHERE is_active = 1
+        """).fetchone()
+    return result['count']
+
+
+def get_users_connected_today():
+    """Utilisateurs connectés aujourd'hui (unique par matricule)"""
+    today = datetime.now().strftime("%Y-%m-%d")
+    with get_conn() as conn:
+        rows = conn.execute("""
+            SELECT u.matricule, u.nom, u.prenom, u.role, 
+                   s.login_time, s.is_active
+            FROM user_sessions s
+            JOIN users u ON s.matricule = u.matricule
+            WHERE DATE(s.login_time) = ?
+            ORDER BY s.login_time DESC
+        """, (today,)).fetchall()
+
+    return [(row['matricule'], row['nom'], row['prenom'], row['role'],
+             row['login_time'], row['is_active']) for row in rows]
+
+
+def get_active_users_now():
+    """Liste des utilisateurs actuellement connectés (unique par matricule)"""
+    with get_conn() as conn:
+        rows = conn.execute("""
+            SELECT u.matricule, u.nom, u.prenom, u.role, 
+                   s.login_time, s.last_activity
+            FROM user_sessions s
+            JOIN users u ON s.matricule = u.matricule
+            WHERE s.is_active = 1
+            ORDER BY s.last_activity DESC
+        """).fetchall()
+
+    return [(row['matricule'], row['nom'], row['prenom'], row['role'],
+             row['login_time'], row['last_activity']) for row in rows]
+
+
+def get_total_conversations():
+    """Nombre total de conversations"""
+    with get_conn() as conn:
+        result = conn.execute("""
+            SELECT COUNT(DISTINCT conv_name || '_' || matricule) as count
+            FROM conversations
+        """).fetchone()
+    return result['count']
+
+
+def get_conversations_by_day():
+    """Évolution moyenne des conversations par jour (30 derniers jours)"""
+    with get_conn() as conn:
+        rows = conn.execute("""
+            SELECT 
+                DATE(timestamp) as date,
+                COUNT(DISTINCT conv_name || '_' || matricule) as conv_count,
+                CASE 
+                    WHEN strftime('%w', DATE(timestamp)) = '0' THEN 'Dimanche'
+                    WHEN strftime('%w', DATE(timestamp)) = '1' THEN 'Lundi'
+                    WHEN strftime('%w', DATE(timestamp)) = '2' THEN 'Mardi'
+                    WHEN strftime('%w', DATE(timestamp)) = '3' THEN 'Mercredi'
+                    WHEN strftime('%w', DATE(timestamp)) = '4' THEN 'Jeudi'
+                    WHEN strftime('%w', DATE(timestamp)) = '5' THEN 'Vendredi'
+                    WHEN strftime('%w', DATE(timestamp)) = '6' THEN 'Samedi'
+                END as day_name
+            FROM conversations
+            WHERE timestamp >= date('now', '-30 days')
+            GROUP BY DATE(timestamp)
+            ORDER BY date ASC
+        """).fetchall()
+
+    return [(row['date'], row['conv_count'], row['day_name']) for row in rows]
+
+
+def get_conversations_by_weekday():
+    """Moyenne des conversations par jour de la semaine"""
+    with get_conn() as conn:
+        rows = conn.execute("""
+            SELECT 
+                CASE 
+                    WHEN strftime('%w', DATE(timestamp)) = '0' THEN 'Dimanche'
+                    WHEN strftime('%w', DATE(timestamp)) = '1' THEN 'Lundi'
+                    WHEN strftime('%w', DATE(timestamp)) = '2' THEN 'Mardi'
+                    WHEN strftime('%w', DATE(timestamp)) = '3' THEN 'Mercredi'
+                    WHEN strftime('%w', DATE(timestamp)) = '4' THEN 'Jeudi'
+                    WHEN strftime('%w', DATE(timestamp)) = '5' THEN 'Vendredi'
+                    WHEN strftime('%w', DATE(timestamp)) = '6' THEN 'Samedi'
+                END as day_name,
+                strftime('%w', DATE(timestamp)) as day_num,
+                COUNT(DISTINCT DATE(timestamp) || '_' || conv_name || '_' || matricule) as total_convs,
+                COUNT(DISTINCT DATE(timestamp)) as days_count,
+                CAST(COUNT(DISTINCT DATE(timestamp) || '_' || conv_name || '_' || matricule) AS FLOAT) / 
+                COUNT(DISTINCT DATE(timestamp)) as avg_convs
+            FROM conversations
+            GROUP BY strftime('%w', DATE(timestamp))
+            ORDER BY day_num
+        """).fetchall()
+
+    return [(row['day_name'], row['avg_convs']) for row in rows]
+
+
+def get_user_types():
+    """Répartition des utilisateurs par type/rôle"""
+    with get_conn() as conn:
+        rows = conn.execute("""
+            SELECT role, COUNT(*) as count
+            FROM users
+            GROUP BY role
+        """).fetchall()
+
+    return {row['role']: row['count'] for row in rows}
