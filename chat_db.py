@@ -1,0 +1,130 @@
+import sqlite3
+from contextlib import contextmanager
+import datetime
+
+DB_PATH = "users.db"
+
+@contextmanager
+def get_conn():
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    yield conn
+    conn.commit()
+    conn.close()
+
+def init_chat_table():
+    with get_conn() as conn:
+        conn.execute("""
+        CREATE TABLE IF NOT EXISTS conversations (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            matricule TEXT,
+            conv_name TEXT,
+            role TEXT,
+            content TEXT,
+            timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+            response_time REAL
+        )
+        """)
+
+        conn.execute("""
+        CREATE TABLE IF NOT EXISTS message_feedback (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            matricule TEXT,
+            conversation_name TEXT,
+            message_index INTEGER,
+            feedback_type TEXT,
+            timestamp TEXT
+        )
+        """)
+
+def save_message(matricule, conv_name, role, content, response_time=None):
+    with get_conn() as conn:
+        conn.execute(
+            "INSERT INTO conversations (matricule, conv_name, role, content, response_time) VALUES (?, ?, ?, ?, ?)",
+            (matricule, conv_name, role, content, response_time)
+        )
+
+def load_conversations(matricule):
+    with get_conn() as conn:
+        rows = conn.execute(
+            "SELECT conv_name, role, content FROM conversations WHERE matricule = ? ORDER BY id ASC",
+            (matricule,)
+        ).fetchall()
+
+    conversations = {}
+    for row in rows:
+        if row["conv_name"] not in conversations:
+            conversations[row["conv_name"]] = []
+        conversations[row["conv_name"]].append({
+            "role": row["role"],
+            "content": row["content"]
+        })
+    return conversations
+
+def delete_conversation(matricule, conversation_name):
+    """Supprime une conversation entière (tous les messages) pour un utilisateur donné."""
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute(
+        "DELETE FROM conversations WHERE matricule = ? AND conv_name = ?",
+        (matricule, conversation_name),
+    )
+    conn.commit()
+    conn.close()
+
+def rename_conversation(matricule, old_name, new_name):
+    """Renomme une conversation dans la base de données"""
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute("""
+        UPDATE conversations 
+        SET conv_name = ? 
+        WHERE matricule = ? AND conv_name = ?
+    """, (new_name, matricule, old_name))
+    conn.commit()
+    conn.close()
+
+def save_feedback(matricule, conversation_name, message_index, feedback_type):
+    """Sauvegarde le feedback d'un message"""
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    # Vérifier si un feedback existe déjà
+    cursor.execute("""
+        SELECT id FROM message_feedback 
+        WHERE matricule = ? AND conversation_name = ? AND message_index = ?
+    """, (matricule, conversation_name, message_index))
+
+    existing = cursor.fetchone()
+
+    if existing:
+        # Mettre à jour
+        cursor.execute("""
+            UPDATE message_feedback 
+            SET feedback_type = ?, timestamp = ? 
+            WHERE id = ?
+        """, (feedback_type, datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"), existing[0]))
+    else:
+        # Insérer nouveau
+        cursor.execute("""
+            INSERT INTO message_feedback (matricule, conversation_name, message_index, feedback_type, timestamp)
+            VALUES (?, ?, ?, ?, ?)
+        """, (matricule, conversation_name, message_index, feedback_type,
+              datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
+
+    conn.commit()
+    conn.close()
+
+def get_feedback(matricule, conversation_name, message_index):
+    """Récupère le feedback d'un message"""
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+
+    cursor.execute("""
+        SELECT feedback_type FROM message_feedback 
+        WHERE matricule = ? AND conversation_name = ? AND message_index = ?
+    """, (matricule, conversation_name, message_index))
+
+    result = cursor.fetchone()
+    conn.close()
+
+    return result[0] if result else None
